@@ -1,0 +1,17 @@
+# build output
+/proxio
+/proxio.exe
+/proxio-*.exe
+*.exe
+*.test
+*.out
+
+# runtime logs
+*.log
+
+# editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
