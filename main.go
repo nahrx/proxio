@@ -31,7 +31,7 @@ import (
 
 const prefix = "/p/"
 
-const version = "0.9.2"
+const version = "0.9.4"
 
 // siteCookie remembers which site the browser is browsing so stray
 // root-relative requests (JS-built "/api/x") can still be proxied.
@@ -114,6 +114,22 @@ if(r.scope.indexOf(location.origin+P)!==0)r.unregister();});}).catch(function(){
 (function(){var s=site();if(!s)return;var p=location.pathname;if(p.indexOf(P)===0)return;
 var i=p.indexOf(P+s);
 location.replace(i>0?p.slice(i)+location.search+location.hash:P+s+p+location.search+location.hash);})();
+// Cloudflare Turnstile/challenge cannot run through a rewriting proxy: its
+// api.js looks for its own <script> tag by the real URL. Say so instead of
+// leaving a cryptic TurnstileError in the console.
+(function(){var done=0;
+function real(){var m=/^\/p\/([^\/]+)\/([^\/]+)(\/.*)?$/.exec(location.pathname);
+return m?m[1]+'://'+m[2]+(m[3]||'/')+location.search:null;}
+function flag(){if(done)return;done=1;var r=real();if(!r)return;
+var d=document.createElement('div');
+d.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#7f1d1d;color:#fff;font:13px/1.45 system-ui,sans-serif;padding:8px 12px;box-shadow:0 2px 8px rgba(0,0,0,.4)');
+d.innerHTML='<b>Proxio:</b> widget Cloudflare (Turnstile/challenge) tidak bisa jalan lewat proxy rewriting. <a style="color:#fff;text-decoration:underline" href="'+r+'" target="_blank" rel="noopener">Buka '+r+' langsung</a>';
+document.documentElement.appendChild(d);}
+function scan(){var a=document.querySelectorAll('script[src]');
+for(var i=0;i<a.length;i++)if(/challenges\.cloudflare\.com|cdn-cgi\/challenge-platform/.test(a[i].src))return flag();}
+function node(n){return n&&n.tagName==='SCRIPT'&&n.src&&/challenges\.cloudflare\.com|cdn-cgi\/challenge-platform/.test(n.src);}
+scan();if(window.MutationObserver)new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var an=ms[i].addedNodes||[];for(var j=0;j<an.length;j++)if(node(an[j]))return flag();}}).observe(document.documentElement,{childList:true,subtree:true});
+})();
 })();`
 // swShimJS is prepended to a service-worker script (marked by swMarker) so the
 // worker resolves URLs against the proxied origin too — without it every cache
@@ -405,6 +421,35 @@ func fixCookie(c string, base *url.URL) string {
 	return strings.Join(out, "; ")
 }
 
+// cfWall reports a Cloudflare bot challenge in a proxied response. Turnstile and
+// the managed challenge only work when the browser itself talks to Cloudflare,
+// so the honest answer is to hand the URL back instead of serving a dead page.
+func cfWall(resp *http.Response, body []byte) bool {
+	if resp.Header.Get("cf-mitigated") != "" {
+		return true
+	}
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusServiceUnavailable {
+		return false
+	}
+	return bytes.Contains(body, []byte("cdn-cgi/challenge-platform")) ||
+		bytes.Contains(body, []byte("challenges.cloudflare.com/turnstile")) ||
+		bytes.Contains(body, []byte("Just a moment"))
+}
+
+func cfNoticePage(target string) []byte {
+	u := htmlEscape(target)
+	return []byte(`<!doctype html><meta charset="utf-8"><title>Butuh browser langsung</title>
+<body style="font:16px/1.6 system-ui;padding:2rem;max-width:44em;background:#0d1117;color:#e6edf3">
+<h3>Situs ini memasang Cloudflare challenge</h3>
+<p style="color:#8b949e">Halaman ini tidak bisa dirender lewat proxy rewriting: Cloudflare memeriksa
+TLS fingerprint, User-Agent, dan IP dari klien yang mengambil halaman — dan yang mengambilnya di sini
+adalah server Go, bukan browser-mu. CAPTCHA/Turnstile hanya bisa diselesaikan browser langsung.</p>
+<p><a style="color:#58a6ff" href="` + u + `">Buka ` + u + ` langsung</a></p>
+<p style="color:#484f58;font-size:.85rem">Kalau mau tetap lewat proxio: jalankan dengan
+<code>-forward :8081</code> dan arahkan host ini ke tunnel (lihat <a style="color:#58a6ff" href="/proxy.pac">/proxy.pac</a>).</p>
+</body>`)
+}
+
 func modify(resp *http.Response) error {
 	h := resp.Header
 	base := resp.Request.URL
@@ -463,7 +508,11 @@ func modify(resp *http.Response) error {
 	}
 	switch {
 	case isHTML:
-		b = rewriteHTML(b, base)
+		if cfWall(resp, b) && isNavigation(resp.Request) {
+			b = cfNoticePage(base.String())
+		} else {
+			b = rewriteHTML(b, base)
+		}
 	case isManifest:
 		b = rewriteManifest(b, base)
 	case isCSS:

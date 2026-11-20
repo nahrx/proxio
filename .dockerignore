@@ -2,4 +2,6 @@
 *.log
 .git
 .gitignore
+.env
+.env.example
 README.md

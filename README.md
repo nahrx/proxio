@@ -31,6 +31,7 @@ http://localhost:8080/go?u=example.com          # redirect helper
 | Prefix ganda | `px()` menormalkan URL yang sudah mengandung `/p/<site>` di tengah path (router yang menempelkan base ke `location.pathname`) |
 | Worker | `new Worker(...)`/`SharedWorker` dipetakan + ditandai `?__proxio_worker=1`; server menyuntik shim worker (fetch/XHR/WebSocket/Cache) |
 | Detektor | shim `console.warn` kalau ada request yang tetap lintas-origin, lengkap dengan stack trace |
+| CF challenge | halaman 403/503 + `cf-mitigated` diganti halaman penjelasan; kalau halaman menyuntik script `challenges.cloudflare.com` (Turnstile), muncul banner merah berisi link ke URL asli |
 | PWA | manifest di-rewrite (`scope`, `start_url`, `icons`, `shortcuts`, `action`), service worker diizinkan, script SW disuntik shim sisi-worker |
 | Path nyasar | navigasi (GET + `Accept: text/html` / `Sec-Fetch-Mode: navigate`) di-**302** ke URL kanonik `/p/...`; XHR/fetch diproxy inline (POST tidak berubah jadi GET). Situs ditebak dari cookie `proxio_site`, lalu header `Referer` |
 | Diagnosa | `/__version` (build yang jalan), `/__reset` (hapus SW + cache), halaman 404 yang menjelaskan penyebab |
@@ -82,21 +83,31 @@ Verified: `spkrt.web.bps.go.id`, `bps.go.id`, `www.cloudflare.com` → `PROXY 12
 
 ## Docker
 
+Port dan host tunnel dibaca dari `.env` (compose mensubstitusi `${VAR}`; default di file tetap jalan tanpa `.env`):
+
 ```bash
+cp .env.example .env      # lalu ubah PORT_REWRITE / PORT_FORWARD / FWD_HOSTS
 docker compose up -d --build
 curl http://localhost:8080/__version
 ```
 
-Port 8080 (UI, proxy rewriting, `/proxy.pac`, diagnosa) dan 8081 (CONNECT). Host yang ditunnelkan PAC diatur lewat env:
+```dotenv
+PORT_REWRITE=8080
+PORT_FORWARD=8081
+FWD_HOSTS=bps.go.id
+```
+
+Nilai yang sama dipakai untuk `ports` (host:container), flag `-addr`/`-forward`, dan healthcheck, jadi ganti port cukup di satu tempat. Port container sengaja dibuat sama dengan port host supaya `/proxy.pac` (yang mengembalikan `<host>:<PORT_FORWARD>`) tetap cocok saat diakses dari mesin lain. Env shell menang atas `.env`:
 
 ```bash
-FWD_HOSTS="bps.go.id,cloudflare.com" docker compose up -d
+PORT_REWRITE=9090 docker compose up -d
 ```
 
 `/proxy.pac` memakai host yang dipakai browser saat mengambilnya, jadi tetap benar kalau diakses dari mesin lain (`http://192.168.1.50:8080/proxy.pac` → `PROXY 192.168.1.50:8081`). Healthcheck memakai `wget` dari alpine ke `/__version`.
 
 ## Batasan yang diketahui
 
+- **Cloudflare Turnstile / CF challenge tidak jalan di mode rewriting.** `api.js` mencari tag `<script>` miliknya sendiri berdasarkan URL asli; di mode rewriting URL-nya jadi `/p/https/challenges.cloudflare.com/...`, jadi muncul `Could not find Turnstile valid script tag` lalu widget gagal render. Pakai mode tunnel (`-forward` + `/proxy.pac`) untuk host seperti itu.
 - Situs yang SW-nya menulis URL origin asli secara hardcode (`https://host/...` di luar `fetch`/`Cache`) tetap bisa meleset; shim hanya menangkap jalur yang lazim.
 - Situs yang membandingkan `Response.url` / `location.origin` dengan origin asli bisa salah kira.
 - `import()` modul dengan URL absolut, dan `<script>`/`<img>` lintas origin yang dibuat JS, dimuat langsung (fungsi jalan, tapi keluar dari proxy).

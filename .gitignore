@@ -9,6 +9,9 @@
 # runtime logs
 *.log
 
+# konfigurasi lokal (port dll); .env.example yang di-commit
+.env
+
 # editor / OS
 .vscode/
 .idea/
