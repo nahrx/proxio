@@ -5,17 +5,21 @@ services:
     container_name: proxio
     restart: unless-stopped
     ports:
-      - "${PORT_REWRITE:-8080}:${PORT_REWRITE:-8080}"   # UI + rewriting proxy + /proxy.pac + diagnosa
-      - "${PORT_FORWARD:-8081}:${PORT_FORWARD:-8081}"   # CONNECT forward proxy (SSO/Cloudflare, TLS end-to-end)
+      - "${PORT_REWRITE}:${PORT_REWRITE}" # UI + rewriting proxy + /proxy.pac + diagnosa
+      - "${PORT_FORWARD}:${PORT_FORWARD}" # CONNECT forward proxy (SSO/Cloudflare, TLS end-to-end)
     command:
       - "-addr"
-      - ":${PORT_REWRITE:-8080}"
+      - ":${PORT_REWRITE}"
       - "-forward"
-      - ":${PORT_FORWARD:-8081}"
+      - ":${PORT_FORWARD}"
       - "-fwd-hosts"
       - "${FWD_HOSTS:-bps.go.id}"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT_REWRITE:-8080}/__version"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:${PORT_REWRITE:-8080}/__version",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
