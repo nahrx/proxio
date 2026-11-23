@@ -4,6 +4,8 @@ services:
     image: proxio:latest
     container_name: proxio
     restart: unless-stopped
+    dns:
+      - "${DNS}"
     ports:
       - "${PORT_REWRITE}:${PORT_REWRITE}" # UI + rewriting proxy + /proxy.pac + diagnosa
       - "${PORT_FORWARD}:${PORT_FORWARD}" # CONNECT forward proxy (SSO/Cloudflare, TLS end-to-end)
