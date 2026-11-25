@@ -17,25 +17,25 @@ http://localhost:8080/go?u=example.com          # redirect helper
 
 ## Cara kerja
 
-| Bagian | Isi |
-|---|---|
-| URL | `/p/<scheme>/<host>/<path>` — relative URL resolve sendiri karena prefix |
-| HTML | `<base href>` disuntik + atribut `href/src/action/poster/formaction` dan `url(...)` di-rewrite |
-| CSS | `url(...)` di-rewrite, relative aman lewat base |
-| Redirect | header `Location` dipetakan balik ke bentuk proxy |
-| Cookie | `Domain`/`Secure`/`SameSite` dibuang, `Path` di-scope ke `/p/<scheme>/<host>/` |
-| Header | CSP, X-Frame-Options, HSTS, COOP/COEP/CORP dihapus supaya halaman bisa dirender |
-| Transport | gzip di-decode saat rewrite, TLS verify off (situs cert rusak tetap jalan), WebSocket lewat (Upgrade) |
-| SPA | shim JS disuntik sebelum script situs: `fetch`/`XHR`/`WebSocket`/`EventSource`/`sendBeacon`/`pushState`/`window.open` di-rewrite, `<base>` ikut rute SPA |
-| JS | origin situs sendiri di dalam file JS (mis. `config.js`: `VITE_API_BASE_URL: 'https://host/backend'`) di-rewrite jadi `/p/https/host/backend`; file > 2 MB dilewati |
-| Prefix ganda | `px()` menormalkan URL yang sudah mengandung `/p/<site>` di tengah path (router yang menempelkan base ke `location.pathname`) |
-| Worker | `new Worker(...)`/`SharedWorker` dipetakan + ditandai `?__proxio_worker=1`; server menyuntik shim worker (fetch/XHR/WebSocket/Cache) |
-| Detektor | shim `console.warn` kalau ada request yang tetap lintas-origin, lengkap dengan stack trace |
-| Turnstile | `challenges.cloudflare.com/turnstile/v0/api.js` dijawab shim sendiri; widget dirender ulang, sitekey+siteurl dikirim ke solver (`TURNSTILE_SOLVER`), token masuk `cf-turnstile-response` + `callback(token)` |
-| CF challenge | halaman 403/503 + `cf-mitigated` diganti halaman penjelasan |
-| PWA | manifest di-rewrite (`scope`, `start_url`, `icons`, `shortcuts`, `action`), service worker diizinkan, script SW disuntik shim sisi-worker |
-| Path nyasar | navigasi (GET + `Accept: text/html` / `Sec-Fetch-Mode: navigate`) di-**302** ke URL kanonik `/p/...`; XHR/fetch diproxy inline (POST tidak berubah jadi GET). Situs ditebak dari cookie `proxio_site`, lalu header `Referer` |
-| Diagnosa | `/__version` (build yang jalan), `/__reset` (hapus SW + cache), halaman 404 yang menjelaskan penyebab |
+| Bagian       | Isi                                                                                                                                                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| URL          | `/p/<scheme>/<host>/<path>` — relative URL resolve sendiri karena prefix                                                                                                                                                     |
+| HTML         | `<base href>` disuntik + atribut `href/src/action/poster/formaction` dan `url(...)` di-rewrite                                                                                                                               |
+| CSS          | `url(...)` di-rewrite, relative aman lewat base                                                                                                                                                                              |
+| Redirect     | header `Location` dipetakan balik ke bentuk proxy                                                                                                                                                                            |
+| Cookie       | `Domain`/`Secure`/`SameSite` dibuang, `Path` di-scope ke `/p/<scheme>/<host>/`                                                                                                                                               |
+| Header       | CSP, X-Frame-Options, HSTS, COOP/COEP/CORP dihapus supaya halaman bisa dirender                                                                                                                                              |
+| Transport    | gzip di-decode saat rewrite, TLS verify off (situs cert rusak tetap jalan), WebSocket lewat (Upgrade)                                                                                                                        |
+| SPA          | shim JS disuntik sebelum script situs: `fetch`/`XHR`/`WebSocket`/`EventSource`/`sendBeacon`/`pushState`/`window.open` di-rewrite, `<base>` ikut rute SPA                                                                     |
+| JS           | origin situs sendiri di dalam file JS (mis. `config.js`: `VITE_API_BASE_URL: 'https://host/backend'`) di-rewrite jadi `/p/https/host/backend`; file > 2 MB dilewati                                                          |
+| Prefix ganda | `px()` menormalkan URL yang sudah mengandung `/p/<site>` di tengah path (router yang menempelkan base ke `location.pathname`)                                                                                                |
+| Worker       | `new Worker(...)`/`SharedWorker` dipetakan + ditandai `?__proxio_worker=1`; server menyuntik shim worker (fetch/XHR/WebSocket/Cache)                                                                                         |
+| Detektor     | shim `console.warn` kalau ada request yang tetap lintas-origin, lengkap dengan stack trace                                                                                                                                   |
+| Turnstile    | `challenges.cloudflare.com/turnstile/v0/api.js` dijawab shim sendiri; widget dirender ulang, sitekey+siteurl dikirim ke solver (`TURNSTILE_SOLVER`), token masuk `cf-turnstile-response` + `callback(token)`                 |
+| CF challenge | halaman 403/503 + `cf-mitigated` diganti halaman penjelasan                                                                                                                                                                  |
+| PWA          | manifest di-rewrite (`scope`, `start_url`, `icons`, `shortcuts`, `action`), service worker diizinkan, script SW disuntik shim sisi-worker                                                                                    |
+| Path nyasar  | navigasi (GET + `Accept: text/html` / `Sec-Fetch-Mode: navigate`) di-**302** ke URL kanonik `/p/...`; XHR/fetch diproxy inline (POST tidak berubah jadi GET). Situs ditebak dari cookie `proxio_site`, lalu header `Referer` |
+| Diagnosa     | `/__version` (build yang jalan), `/__reset` (hapus SW + cache), halaman 404 yang menjelaskan penyebab                                                                                                                        |
 
 ## SPA
 
@@ -70,15 +70,13 @@ Batasan mode ini: tidak ada rewrite (situs jalan apa adanya), tidak menyembunyik
 ## Seamless routing: /proxy.pac
 
 ```bash
-./proxio.exe -addr :8080 -forward :8081 -fwd-hosts "bps.go.id,cloudflare.com"
+./proxio.exe -addr :8080 -forward :8081 -fwd-hosts "google.com,cloudflare.com"
 ```
 
 `http://localhost:8080/proxy.pac` mengembalikan PAC: host yang cocok → `PROXY 127.0.0.1:8081` (tunnel CONNECT, browser urus TLS sendiri), sisanya `DIRECT`. Set sekali di browser, tidak perlu flag atau ekstensi:
 
 - Windows: Settings → Network & Internet → Proxy → **Use setup script** → `http://localhost:8080/proxy.pac` (Chrome/Edge ikut setelan sistem).
 - Firefox: Settings → Network Settings → **Automatic proxy configuration URL** → URL yang sama.
-
-Verified: `spkrt.web.bps.go.id`, `bps.go.id`, `www.cloudflare.com` → `PROXY 127.0.0.1:8081`; `example.com` → `DIRECT`. `-fwd-hosts "*"` menyalurkan semua lewat tunnel.
 
 **Bukan** alat lewat CAPTCHA: Cloudflare memeriksa TLS/JA3 + UA + IP. Lewat tunnel, browser-mu yang bicara langsung, jadi challenge muncul dan diselesaikan seperti browsing biasa — dan `cf_clearance` yang sah tersimpan di profil itu.
 
@@ -116,7 +114,7 @@ curl http://localhost:8080/__version
 ```dotenv
 PORT_REWRITE=8080
 PORT_FORWARD=8081
-FWD_HOSTS=bps.go.id
+FWD_HOSTS=example.com
 ```
 
 Nilai yang sama dipakai untuk `ports` (host:container), flag `-addr`/`-forward`, dan healthcheck, jadi ganti port cukup di satu tempat. Port container sengaja dibuat sama dengan port host supaya `/proxy.pac` (yang mengembalikan `<host>:<PORT_FORWARD>`) tetap cocok saat diakses dari mesin lain. Env shell menang atas `.env`:
