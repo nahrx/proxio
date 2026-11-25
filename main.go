@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,7 +32,7 @@ import (
 
 const prefix = "/p/"
 
-const version = "0.9.4"
+const version = "0.9.5"
 
 // siteCookie remembers which site the browser is browsing so stray
 // root-relative requests (JS-built "/api/x") can still be proxied.
@@ -62,6 +63,7 @@ if(u instanceof URL)u=u.href;
 if(typeof u!=='string'||!u)return u;
 if(u.charAt(0)==='#'||u.indexOf(P)===0)return u;
 if(/^(data|blob|javascript|mailto|tel|about|chrome-extension|filesystem):/i.test(u))return u;
+if(u.indexOf('/__')===0)return u; // proxio's own endpoints stay same-origin
 var a=new URL(u,document.baseURI);
 var s=site();
 if(s){var i=a.pathname.indexOf(P+s);if(i>0)return a.pathname.slice(i)+a.search+a.hash;}
@@ -114,23 +116,122 @@ if(r.scope.indexOf(location.origin+P)!==0)r.unregister();});}).catch(function(){
 (function(){var s=site();if(!s)return;var p=location.pathname;if(p.indexOf(P)===0)return;
 var i=p.indexOf(P+s);
 location.replace(i>0?p.slice(i)+location.search+location.hash:P+s+p+location.search+location.hash);})();
-// Cloudflare Turnstile/challenge cannot run through a rewriting proxy: its
-// api.js looks for its own <script> tag by the real URL. Say so instead of
-// leaving a cryptic TurnstileError in the console.
-(function(){var done=0;
-function real(){var m=/^\/p\/([^\/]+)\/([^\/]+)(\/.*)?$/.exec(location.pathname);
-return m?m[1]+'://'+m[2]+(m[3]||'/')+location.search:null;}
-function flag(){if(done)return;done=1;var r=real();if(!r)return;
-var d=document.createElement('div');
-d.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#7f1d1d;color:#fff;font:13px/1.45 system-ui,sans-serif;padding:8px 12px;box-shadow:0 2px 8px rgba(0,0,0,.4)');
-d.innerHTML='<b>Proxio:</b> widget Cloudflare (Turnstile/challenge) tidak bisa jalan lewat proxy rewriting. <a style="color:#fff;text-decoration:underline" href="'+r+'" target="_blank" rel="noopener">Buka '+r+' langsung</a>';
-document.documentElement.appendChild(d);}
-function scan(){var a=document.querySelectorAll('script[src]');
-for(var i=0;i<a.length;i++)if(/challenges\.cloudflare\.com|cdn-cgi\/challenge-platform/.test(a[i].src))return flag();}
-function node(n){return n&&n.tagName==='SCRIPT'&&n.src&&/challenges\.cloudflare\.com|cdn-cgi\/challenge-platform/.test(n.src);}
-scan();if(window.MutationObserver)new MutationObserver(function(ms){for(var i=0;i<ms.length;i++){var an=ms[i].addedNodes||[];for(var j=0;j<an.length;j++)if(node(an[j]))return flag();}}).observe(document.documentElement,{childList:true,subtree:true});
-})();
 })();`
+
+// turnstileJS is served in place of challenges.cloudflare.com/turnstile/v0/api.js.
+// The real api.js finds its own <script> tag by URL, which a rewriting proxy
+// breaks, so the widget is re-implemented here: it reads the sitekey off the
+// container, asks the solver for a token through /__turnstile/solve, and fires
+// the same callbacks the real widget does (callback, expired-callback, ...).
+const turnstileJS = `(function(){
+if(window.turnstile&&window.turnstile.__proxio)return;
+var S=document.currentScript,EXPLICIT=!!(S&&/[?&]render=explicit/.test(S.src));
+var seq=-1,W={};
+function site(){var m=/^\/p\/([^\/]+)\/([^\/]+)(\/.*)?$/.exec(location.pathname);
+return m?m[1]+'://'+m[2]+(m[3]||'/')+location.search:null;}
+function attr(el,k){return el&&el.getAttribute?el.getAttribute('data-'+k):null;}
+function fn(o,k,el){var f=o&&o[k];if(typeof f==='function')return f;var n=attr(el,k);return n?window[n]:null;}
+function call(f,a){if(typeof f==='function')try{f(a);}catch(e){console.warn('[turnstile/proxio]',e);}}
+var CHECK='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.6l5.2 5.2L20 6.4"/></svg>';
+var BANG='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round"><path d="M12 5v9"/><path d="M12 19h.01"/></svg>';
+var SPIN='<span style="display:block;width:15px;height:15px;border:2px solid rgba(128,128,128,.35);border-top-color:#6b7280;border-radius:50%;animation:px-ts-spin .8s linear infinite"></span>';
+var CLOUD='<svg width="18" height="11" viewBox="0 0 20 12" aria-hidden="true"><g fill="#f38020"><circle cx="5.2" cy="7.6" r="3.3"/><circle cx="10" cy="5.4" r="4.3"/><circle cx="14.8" cy="7.7" r="3.2"/><rect x="5" y="7.5" width="10" height="3.6" rx="1.8"/></g></svg>';
+function css(){if(document.getElementById('proxio-ts-css'))return;
+var s=document.createElement('style');s.id='proxio-ts-css';
+s.textContent='@keyframes px-ts-spin{to{transform:rotate(360deg)}}';
+(document.head||document.documentElement).appendChild(s);}
+function widget(el,opts){
+opts=opts||{};css();
+var id=++seq,dark=(opts.theme||attr(el,'theme'))==='dark';
+var w={id:id,el:el,opts:opts,sitekey:opts.sitekey||attr(el,'sitekey')||'',token:null,timer:0};
+el.innerHTML='';
+var b=document.createElement('div');
+b.style.cssText='box-sizing:border-box;display:flex;align-items:center;width:300px;height:65px;padding:0 12px;'+
+'border:1px solid '+(dark?'#4b4b4b':'#e0e0e0')+';border-radius:3px;'+
+'background:'+(dark?'#22272b':'#fdfdfd')+';color:'+(dark?'#e8e8e8':'#232323')+';'+
+'font:14px/1.25 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;'+
+'user-select:none;overflow:hidden';
+w.icon=document.createElement('span');
+w.icon.style.cssText='flex:none;display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;margin-right:10px';
+w.txt=document.createElement('span');
+w.txt.style.cssText='font-size:14px;line-height:1;white-space:nowrap;letter-spacing:-.01em;display:flex;align-items:center';
+var right=document.createElement('span');
+right.style.cssText='margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:3px';
+var lk='color:'+(dark?'#9b9b9b':'#8a8a8a')+';text-decoration:underline';
+right.innerHTML='<span style="display:flex;align-items:center;gap:5px">'+CLOUD+
+'<b style="font-size:10px;letter-spacing:.075em;font-weight:700;color:'+(dark?'#e8e8e8':'#232323')+'">CLOUDFLARE</b></span>'+
+'<span style="font-size:9px;color:'+(dark?'#9b9b9b':'#8a8a8a')+'">'+
+'<a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener" style="'+lk+'">Privacy</a>'+
+'<span style="color:#c0c0c0">&nbsp;&middot;&nbsp;</span>'+
+'<a href="https://support.cloudflare.com/" target="_blank" rel="noopener" style="'+lk+'">Help</a></span>';
+b.appendChild(w.icon);b.appendChild(w.txt);b.appendChild(right);el.appendChild(b);
+w.input=document.createElement('input');w.input.type='hidden';w.input.name='cf-turnstile-response';el.appendChild(w.input);
+el.__tsw=w;W[id]=w;
+mark(w,'busy');solve(w);return id;}
+function mark(w,s){
+var dark=(w.opts.theme||attr(w.el,'theme'))==='dark';
+w.icon.style.background='transparent';
+if(s==='ok'){w.icon.style.background='#12a150';w.icon.innerHTML=CHECK;w.txt.textContent='Success!';}
+else if(s==='busy'){w.icon.innerHTML=SPIN;w.txt.textContent='Memverifikasi\u2026';}
+else if(s==='expired'){w.icon.style.background='#9b9b9b';w.icon.innerHTML=BANG;
+w.txt.textContent='Kedaluwarsa';}
+else{w.icon.style.background='#d33a3a';w.icon.innerHTML=BANG;w.txt.textContent='Gagal verifikasi';}
+w.txt.style.color=dark?'#e8e8e8':'#232323';}
+function solve(w){
+clearTimeout(w.timer);w.token=null;w.input.value='';mark(w,'busy');
+call(fn(w.opts,'before-interactive-callback',w.el));
+var url=site();
+if(!w.sitekey||!url){fail(w,'sitekey/siteurl tidak ditemukan');return;}
+fetch('/__turnstile/solve',{method:'POST',credentials:'same-origin',
+headers:{'Content-Type':'application/json'},
+body:JSON.stringify({sitekey:w.sitekey,siteurl:url})})
+.then(function(r){return r.text().then(function(t){
+var j={};try{j=JSON.parse(t);}catch(e){throw new Error(t.slice(0,140)||('HTTP '+r.status));}
+if(!r.ok||!j.token)throw new Error(j.error||('HTTP '+r.status));return j;});})
+.then(function(j){
+w.token=j.token;w.input.value=j.token;mark(w,'ok');
+call(fn(w.opts,'after-interactive-callback',w.el));
+call(fn(w.opts,'success-callback',w.el));
+call(fn(w.opts,'callback',w.el),j.token);
+w.timer=setTimeout(function(){expired(w);},295000);
+}).catch(function(e){fail(w,e&&e.message||String(e));});}
+function expired(w){
+w.token=null;w.input.value='';mark(w,'expired');
+call(fn(w.opts,'expired-callback',w.el));
+w.timer=setTimeout(function(){solve(w);},800);}
+function fail(w,msg){
+w.token=null;w.input.value='';mark(w,'fail');
+console.warn('[turnstile/proxio]',msg);
+call(fn(w.opts,'error-callback',w.el),'proxio-solve');}
+function get(x){
+if(x&&x.nodeType)return x.__tsw||null;
+if(typeof x==='string'){var el=document.querySelector(x);return el&&el.__tsw||null;}
+return W[x]||null;}
+window.turnstile={
+render:function(t,o){var el=typeof t==='string'?document.querySelector(t):t;
+if(!el)throw new Error('turnstile: container tidak ditemukan');
+return el.__tsw?el.__tsw.id:widget(el,o);},
+reset:function(x){var w=get(x);if(w)solve(w);},
+remove:function(x){var w=get(x);if(!w)return;clearTimeout(w.timer);
+delete W[w.id];w.el.innerHTML='';delete w.el.__tsw;},
+getResponse:function(x){var w=get(x);return w&&w.token?w.token:'';},
+isExpired:function(x){var w=get(x);return !w||!w.token;},
+execute:function(x){var w=get(x);if(w)solve(w);return w?w.token:'';},
+ready:function(f){if(typeof f==='function')try{f();}catch(e){}},
+__proxio:1};
+if(typeof window.onloadTurnstileCallback==='function')try{window.onloadTurnstileCallback();}catch(e){}
+if(!EXPLICIT){
+var boot=function(){var a=document.querySelectorAll('.cf-turnstile');
+for(var i=0;i<a.length;i++)if(!a[i].__tsw)widget(a[i],{});};
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+if(window.MutationObserver)new MutationObserver(function(ms){
+for(var i=0;i<ms.length;i++){var an=ms[i].addedNodes||[];
+for(var j=0;j<an.length;j++){var n=an[j];if(n.nodeType!==1)continue;
+if(n.classList&&n.classList.contains('cf-turnstile')&&!n.__tsw)widget(n,{});
+var c=n.querySelectorAll?n.querySelectorAll('.cf-turnstile'):[];
+for(var k=0;k<c.length;k++)if(!c[k].__tsw)widget(c[k],{});}}}).observe(document.documentElement,{childList:true,subtree:true});}
+})();`
+
 // swShimJS is prepended to a service-worker script (marked by swMarker) so the
 // worker resolves URLs against the proxied origin too — without it every cache
 // key and fetch inside the SW points at the bare site origin.
@@ -161,7 +262,6 @@ function wrap(o,k){var f=o&&o[k];if(typeof f!=='function')return;o[k]=function()
 if(self.clients&&self.clients.openWindow){var ow=self.clients.openWindow.bind(self.clients);self.clients.openWindow=function(u){return ow(px(u));};}
 self.__proxio_sw=1;
 })();`
-
 
 func proxyURL(u *url.URL) string {
 	p := u.EscapedPath()
@@ -273,10 +373,56 @@ func (s *statusRecorder) WriteHeader(c int) {
 	s.ResponseWriter.WriteHeader(c)
 }
 
+// logRequests prints the requests worth seeing when a site misbehaves: POSTs,
+// redirects, document navigations — with the Location proxio handed back.
+func logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+		if rec.code == 0 {
+			rec.code = http.StatusOK
+		}
+		if r.Method != http.MethodGet || rec.code >= 300 || isNavigation(r) {
+			log.Printf("%s %s -> %d %s", r.Method, r.URL.RequestURI(), rec.code, rec.Header().Get("Location"))
+		}
+	})
+}
+
 var attrRe = regexp.MustCompile(`(?i)\b(href|src|action|poster|formaction|data-src)=("|')([^"']*)("|')`)
 var cssURLRe = regexp.MustCompile(`(?i)url\((['"]?)([^)'"]*)(['"]?)\)`)
 var headRe = regexp.MustCompile(`(?i)<head[^>]*>`)
 var baseRe = regexp.MustCompile(`(?i)<base[\s>/]`)
+
+// meta refresh and inline `location = '…'` are redirects a header rewrite can't
+// reach: the target is plain text in the body, so "/" would land on proxio's own
+// home page instead of the site's root.
+var refreshTagRe = regexp.MustCompile(`(?i)<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*>`)
+var refreshURLRe = regexp.MustCompile(`(?i)(url\s*=\s*)([^"'>\s;]+)`)
+
+// locDQ/locSQ: Go's regexp has no backreferences, so one pattern per quote.
+var locDQ = regexp.MustCompile(`(?i)((?:window|document|top|self|parent)\s*\.\s*)?location\s*(\.\s*(?:href|replace|assign)\s*)?(=\s*|\()\s*"([^"\n]*)"`)
+var locSQ = regexp.MustCompile(`(?i)((?:window|document|top|self|parent)\s*\.\s*)?location\s*(\.\s*(?:href|replace|assign)\s*)?(=\s*|\()\s*'([^'\n]*)'`)
+
+func rewriteRefresh(v string, base *url.URL) string {
+	return refreshURLRe.ReplaceAllStringFunc(v, func(m string) string {
+		s := refreshURLRe.FindStringSubmatch(m)
+		return s[1] + rewriteRef(s[2], base)
+	})
+}
+
+func rewriteLocRefs(b []byte, base *url.URL) []byte {
+	for _, c := range []struct {
+		re *regexp.Regexp
+		q  string
+	}{{locDQ, `"`}, {locSQ, `'`}} {
+		b = c.re.ReplaceAllFunc(b, func(m []byte) []byte {
+			s := c.re.FindSubmatch(m)
+			return []byte(string(s[1]) + "location" + string(s[2]) + string(s[3]) +
+				c.q + rewriteRef(string(s[4]), base) + c.q)
+		})
+	}
+	return b
+}
 
 // rewriteRef maps a reference found in a document to its proxied form.
 func rewriteRef(v string, base *url.URL) string {
@@ -318,6 +464,8 @@ func rewriteHTML(b []byte, base *url.URL) []byte {
 		return []byte(string(s[1]) + "=" + string(s[2]) + rewriteRef(string(s[3]), base) + string(s[4]))
 	})
 	b = rewriteCSS(b, base)
+	b = rewriteLocRefs(b, base)
+	b = refreshTagRe.ReplaceAllFunc(b, func(m []byte) []byte { return []byte(rewriteRefresh(string(m), base)) })
 
 	// <base> makes every relative URL resolve back into the proxy (skipped if
 	// the page has its own); the shim runs before any site script so
@@ -380,6 +528,7 @@ func rewriteJS(b []byte, base *url.URL) []byte {
 	if len(b) > 2<<20 {
 		return b
 	}
+	b = rewriteLocRefs(b, base)
 	origin := base.Scheme + "://" + base.Host
 	if !bytes.Contains(b, []byte(origin)) {
 		return b
@@ -468,6 +617,9 @@ func modify(resp *http.Response) error {
 	if loc := h.Get("Location"); loc != "" {
 		h.Set("Location", rewriteRef(loc, base))
 	}
+	if rv := h.Get("Refresh"); rv != "" {
+		h.Set("Refresh", rewriteRefresh(rv, base))
+	}
 
 	ct := strings.ToLower(h.Get("Content-Type"))
 	isHTML := strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml")
@@ -512,6 +664,7 @@ func modify(resp *http.Response) error {
 			b = cfNoticePage(base.String())
 		} else {
 			b = rewriteHTML(b, base)
+			b = turnstilePage(b, base)
 		}
 	case isManifest:
 		b = rewriteManifest(b, base)
@@ -814,11 +967,141 @@ func pacScript(host, port string, hosts []string) string {
 	return b.String()
 }
 
+// turnstileSolver is the solving service that mints a Turnstile token for a
+// sitekey: POST {"sitekey","siteurl"} -> {"token","elapsed"}. Set
+// TURNSTILE_SOLVER=off in .env to stop intercepting api.js.
+var turnstileSolver string
+
+func turnstileOn() bool {
+	return turnstileSolver != "" && !strings.EqualFold(turnstileSolver, "off")
+}
+
+var solverClient = &http.Client{Timeout: 180 * time.Second}
+
+// turnstileSolve proxies one solve request to the solver service. The browser
+// talks to us (same origin, no CORS/mixed content) and the solver URL stays
+// server-side.
+func turnstileSolve(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		io.WriteString(w, `{"error":"POST only"}`)
+		return
+	}
+	var in struct {
+		Sitekey string `json:"sitekey"`
+		Siteurl string `json:"siteurl"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil || in.Sitekey == "" || in.Siteurl == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":"sitekey dan siteurl wajib"}`)
+		return
+	}
+	body, _ := json.Marshal(in)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, turnstileSolver, bytes.NewReader(body))
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"error":%q}`, err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	start := time.Now()
+	resp, err := solverClient.Do(req)
+	if err != nil {
+		log.Printf("turnstile %s gagal: %v", in.Sitekey, err)
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, `{"error":%q}`, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	var out map[string]any
+	json.Unmarshal(b, &out)
+	token, _ := out["token"].(string)
+	if token == "" {
+		if v, ok := out["value"].(string); ok {
+			token = v
+		}
+	}
+	if token == "" {
+		log.Printf("turnstile %s: solver balas %d: %s", in.Sitekey, resp.StatusCode, strings.TrimSpace(string(b)))
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write(b)
+		return
+	}
+	out["token"] = token
+	log.Printf("turnstile token sitekey=%s site=%s in %dms", in.Sitekey, in.Siteurl, time.Since(start).Milliseconds())
+	json.NewEncoder(w).Encode(out)
+}
+
+var tsSitekeyRe = regexp.MustCompile(`(?i)data-sitekey=["']([^"']+)["']`)
+
+// turnstilePage detects a Turnstile widget in a proxied page and logs the
+// sitekey + siteurl. Pages that build the widget without loading api.js in the
+// HTML (rare) get the shim script tag injected; the usual case needs nothing —
+// the api.js request itself is answered by us.
+func turnstilePage(b []byte, base *url.URL) []byte {
+	if !bytes.Contains(b, []byte("cf-turnstile")) && !bytes.Contains(b, []byte("turnstile/v0/api.js")) {
+		return b
+	}
+	var keys []string
+	for _, m := range tsSitekeyRe.FindAllSubmatch(b, -1) {
+		keys = append(keys, string(m[1]))
+	}
+	log.Printf("turnstile terdeteksi site=%s sitekey=[%s]", base.Scheme+"://"+base.Host, strings.Join(keys, ", "))
+	if !turnstileOn() || len(keys) == 0 || bytes.Contains(b, []byte("turnstile/v0/api.js")) {
+		return b
+	}
+	tag := []byte(`<script src="` + prefix + `https/challenges.cloudflare.com/turnstile/v0/api.js"></script>`)
+	if loc := headRe.FindIndex(b); loc != nil {
+		out := make([]byte, 0, len(b)+len(tag))
+		out = append(out, b[:loc[1]]...)
+		out = append(out, tag...)
+		return append(out, b[loc[1]:]...)
+	}
+	return append(tag, b...)
+}
+
+// env reads a variable with a fallback; loadDotEnv lets the plain binary pick up
+// .env too (docker-compose passes env_file).
+func env(k, def string) string {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		return v
+	}
+	return def
+}
+
+func loadDotEnv(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		if os.Getenv(k) == "" {
+			os.Setenv(k, strings.Trim(strings.TrimSpace(v), `"'`))
+		}
+	}
+}
+
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	fwd := flag.String("forward", "", "optional CONNECT (forward proxy) listen address, e.g. :8081")
 	fwdHosts := flag.String("fwd-hosts", "bps.go.id", "comma-separated hosts tunnelled by /proxy.pac (suffix match, * = all)")
 	flag.Parse()
+	loadDotEnv(".env")
+	turnstileSolver = env("TURNSTILE_SOLVER", "http://192.168.50.212:8191/solve")
+	if turnstileOn() {
+		log.Printf("turnstile solver: %s", turnstileSolver)
+	}
 
 	if *fwd != "" {
 		go func() {
@@ -830,7 +1113,7 @@ func main() {
 
 	rp := newProxy()
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	http.Handle("/", logRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/":
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -868,6 +1151,9 @@ func main() {
 		case r.URL.Path == "/__version":
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			io.WriteString(w, version+"\n")
+			return
+		case r.URL.Path == "/__turnstile/solve":
+			turnstileSolve(w, r)
 			return
 		case r.URL.Path == "/__ping":
 			pingHandler(w, r)
@@ -927,6 +1213,11 @@ func main() {
 				}
 			}
 		}
+		if turnstileOn() && t.Host == "challenges.cloudflare.com" && strings.HasSuffix(strings.ToLower(t.Path), "/api.js") {
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+			io.WriteString(w, turnstileJS)
+			return
+		}
 		r2 := r.Clone(ctx)
 		r2.URL = t
 		if isSWPath(t.Path) {
@@ -937,7 +1228,7 @@ func main() {
 			return
 		}
 		rp.ServeHTTP(w, r2)
-	})
+	})))
 
 	srv := &http.Server{
 		Addr:              *addr,

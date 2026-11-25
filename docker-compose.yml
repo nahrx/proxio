@@ -6,6 +6,8 @@ services:
     restart: unless-stopped
     dns:
       - "${DNS}"
+    env_file:
+      - .env
     ports:
       - "${PORT_REWRITE}:${PORT_REWRITE}" # UI + rewriting proxy + /proxy.pac + diagnosa
       - "${PORT_FORWARD}:${PORT_FORWARD}" # CONNECT forward proxy (SSO/Cloudflare, TLS end-to-end)

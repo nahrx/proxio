@@ -31,7 +31,8 @@ http://localhost:8080/go?u=example.com          # redirect helper
 | Prefix ganda | `px()` menormalkan URL yang sudah mengandung `/p/<site>` di tengah path (router yang menempelkan base ke `location.pathname`) |
 | Worker | `new Worker(...)`/`SharedWorker` dipetakan + ditandai `?__proxio_worker=1`; server menyuntik shim worker (fetch/XHR/WebSocket/Cache) |
 | Detektor | shim `console.warn` kalau ada request yang tetap lintas-origin, lengkap dengan stack trace |
-| CF challenge | halaman 403/503 + `cf-mitigated` diganti halaman penjelasan; kalau halaman menyuntik script `challenges.cloudflare.com` (Turnstile), muncul banner merah berisi link ke URL asli |
+| Turnstile | `challenges.cloudflare.com/turnstile/v0/api.js` dijawab shim sendiri; widget dirender ulang, sitekey+siteurl dikirim ke solver (`TURNSTILE_SOLVER`), token masuk `cf-turnstile-response` + `callback(token)` |
+| CF challenge | halaman 403/503 + `cf-mitigated` diganti halaman penjelasan |
 | PWA | manifest di-rewrite (`scope`, `start_url`, `icons`, `shortcuts`, `action`), service worker diizinkan, script SW disuntik shim sisi-worker |
 | Path nyasar | navigasi (GET + `Accept: text/html` / `Sec-Fetch-Mode: navigate`) di-**302** ke URL kanonik `/p/...`; XHR/fetch diproxy inline (POST tidak berubah jadi GET). Situs ditebak dari cookie `proxio_site`, lalu header `Referer` |
 | Diagnosa | `/__version` (build yang jalan), `/__reset` (hapus SW + cache), halaman 404 yang menjelaskan penyebab |
@@ -81,6 +82,27 @@ Verified: `spkrt.web.bps.go.id`, `bps.go.id`, `www.cloudflare.com` → `PROXY 12
 
 **Bukan** alat lewat CAPTCHA: Cloudflare memeriksa TLS/JA3 + UA + IP. Lewat tunnel, browser-mu yang bicara langsung, jadi challenge muncul dan diselesaikan seperti browsing biasa — dan `cf_clearance` yang sah tersimpan di profil itu.
 
+## Turnstile (solver)
+
+Widget Turnstile tidak bisa jalan apa adanya lewat proxy rewriting: `api.js` mencari tag `<script>` miliknya sendiri berdasarkan URL asli. Proxio menyelesaikannya dengan **mengganti `api.js` dengan implementasi sendiri** — bukan melewati challenge diam-diam:
+
+1. Request ke `/p/…/challenges.cloudflare.com/turnstile/v0/api.js` dijawab shim (`turnstileJS`), bukan diteruskan ke Cloudflare.
+2. Shim mendeteksi container `.cf-turnstile` (auto-render, `data-sitekey`, `data-theme`, `data-callback`, atau `turnstile.render()` dengan `?render=explicit`), mengambil **sitekey** dari container/opsi dan **siteurl** dari URL halaman asli.
+3. Shim `POST /__turnstile/solve` → server meneruskan `{"sitekey","siteurl"}` ke `TURNSTILE_SOLVER` (`.env`) → `{"token","elapsed"}` → token diisi ke `input[name=cf-turnstile-response]` dan `callback(token)` dipanggil seperti widget asli. Token dianggap kedaluwarsa setelah 295 detik (`expired-callback`, lalu solve ulang otomatis).
+4. API yang ditiru: `render`, `reset`, `remove`, `getResponse`, `isExpired`, `execute`, `ready`, plus `onloadTurnstileCallback`.
+
+Halaman yang memuat Turnstile juga dicatat di log: `turnstile terdeteksi site=… sitekey=[…]` dan `turnstile token sitekey=… in …ms`. Kalau halaman memakai widget tapi tidak memuat `api.js` di HTML-nya, tag shim disuntikkan otomatis.
+
+```bash
+curl -s -X POST http://localhost:8080/__turnstile/solve \
+  -H 'Content-Type: application/json' \
+  -d '{"sitekey":"0x4AAAAAAA…","siteurl":"https://situs.example/halaman"}'
+```
+
+`TURNSTILE_SOLVER=off` mematikan semua ini (api.js Cloudflare dibiarkan apa adanya, widget akan gagal seperti sebelumnya).
+
+Batasan: token terikat sitekey + siteurl dan sekali pakai — kalau solver mengembalikan token untuk host/IP lain atau halaman berbeda, server situs tetap menolak. Ini juga bukan cara menyelesaikan CAPTCHA milik orang lain: pakai hanya pada situs yang kamu kelola/uji.
+
 ## Docker
 
 Port dan host tunnel dibaca dari `.env` (compose mensubstitusi `${VAR}`; default di file tetap jalan tanpa `.env`):
@@ -107,7 +129,7 @@ PORT_REWRITE=9090 docker compose up -d
 
 ## Batasan yang diketahui
 
-- **Cloudflare Turnstile / CF challenge tidak jalan di mode rewriting.** `api.js` mencari tag `<script>` miliknya sendiri berdasarkan URL asli; di mode rewriting URL-nya jadi `/p/https/challenges.cloudflare.com/...`, jadi muncul `Could not find Turnstile valid script tag` lalu widget gagal render. Pakai mode tunnel (`-forward` + `/proxy.pac`) untuk host seperti itu.
+- **Turnstile butuh solver.** `api.js` asli tidak bisa jalan di mode rewriting (ia mencari tag `<script>`-nya sendiri), jadi proxio menggantinya dengan shim + `TURNSTILE_SOLVER`. Kalau solver mati atau menolak sitekey, widget menampilkan "Gagal verifikasi" dan `error-callback` dipanggil. CF challenge halaman penuh (403/503 `cf-mitigated`) tetap tidak bisa dilewati — pakai mode tunnel.
 - Situs yang SW-nya menulis URL origin asli secara hardcode (`https://host/...` di luar `fetch`/`Cache`) tetap bisa meleset; shim hanya menangkap jalur yang lazim.
 - Situs yang membandingkan `Response.url` / `location.origin` dengan origin asli bisa salah kira.
 - `import()` modul dengan URL absolut, dan `<script>`/`<img>` lintas origin yang dibuat JS, dimuat langsung (fungsi jalan, tapi keluar dari proxy).
