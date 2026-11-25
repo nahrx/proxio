@@ -88,7 +88,7 @@ Widget Turnstile tidak bisa jalan apa adanya lewat proxy rewriting: `api.js` men
 
 1. Request ke `/p/…/challenges.cloudflare.com/turnstile/v0/api.js` dijawab shim (`turnstileJS`), bukan diteruskan ke Cloudflare.
 2. Shim mendeteksi container `.cf-turnstile` (auto-render, `data-sitekey`, `data-theme`, `data-callback`, atau `turnstile.render()` dengan `?render=explicit`), mengambil **sitekey** dari container/opsi dan **siteurl** dari URL halaman asli.
-3. Shim `POST /__turnstile/solve` → server meneruskan `{"sitekey","siteurl"}` ke `TURNSTILE_SOLVER` (`.env`) → `{"token","elapsed"}` → token diisi ke `input[name=cf-turnstile-response]` dan `callback(token)` dipanggil seperti widget asli. Token dianggap kedaluwarsa setelah 295 detik (`expired-callback`, lalu solve ulang otomatis).
+3. Shim `POST /__turnstile/solve` → server meneruskan `{"sitekey","siteurl"}` ke `TURNSTILE_SOLVER` (env container) → `{"token","elapsed"}` → token diisi ke `input[name=cf-turnstile-response]` dan `callback(token)` dipanggil seperti widget asli. Token dianggap kedaluwarsa setelah 295 detik (`expired-callback`, lalu solve ulang otomatis).
 4. API yang ditiru: `render`, `reset`, `remove`, `getResponse`, `isExpired`, `execute`, `ready`, plus `onloadTurnstileCallback`.
 
 Halaman yang memuat Turnstile juga dicatat di log: `turnstile terdeteksi site=… sitekey=[…]` dan `turnstile token sitekey=… in …ms`. Kalau halaman memakai widget tapi tidak memuat `api.js` di HTML-nya, tag shim disuntikkan otomatis.
@@ -99,7 +99,7 @@ curl -s -X POST http://localhost:8080/__turnstile/solve \
   -d '{"sitekey":"0x4AAAAAAA…","siteurl":"https://situs.example/halaman"}'
 ```
 
-`TURNSTILE_SOLVER=off` mematikan semua ini (api.js Cloudflare dibiarkan apa adanya, widget akan gagal seperti sebelumnya).
+`TURNSTILE_SOLVER=off` mematikan semua ini (api.js Cloudflare dibiarkan apa adanya, widget akan gagal seperti sebelumnya). Di Docker nilainya diisi di `docker-compose.yml` (`environment: TURNSTILE_SOLVER`), bukan lewat `.env`; override dari shell: `TURNSTILE_SOLVER=off docker compose up -d`.
 
 Batasan: token terikat sitekey + siteurl dan sekali pakai — kalau solver mengembalikan token untuk host/IP lain atau halaman berbeda, server situs tetap menolak. Ini juga bukan cara menyelesaikan CAPTCHA milik orang lain: pakai hanya pada situs yang kamu kelola/uji.
 

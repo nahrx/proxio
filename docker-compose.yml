@@ -6,8 +6,9 @@ services:
     restart: unless-stopped
     dns:
       - "${DNS}"
-    env_file:
-      - .env
+    environment:
+      # solver Turnstile; override dari shell: TURNSTILE_SOLVER=... docker compose up -d
+      TURNSTILE_SOLVER: "${TURNSTILE_SOLVER}"
     ports:
       - "${PORT_REWRITE}:${PORT_REWRITE}" # UI + rewriting proxy + /proxy.pac + diagnosa
       - "${PORT_FORWARD}:${PORT_FORWARD}" # CONNECT forward proxy (SSO/Cloudflare, TLS end-to-end)

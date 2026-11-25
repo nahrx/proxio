@@ -969,7 +969,7 @@ func pacScript(host, port string, hosts []string) string {
 
 // turnstileSolver is the solving service that mints a Turnstile token for a
 // sitekey: POST {"sitekey","siteurl"} -> {"token","elapsed"}. Set
-// TURNSTILE_SOLVER=off in .env to stop intercepting api.js.
+// TURNSTILE_SOLVER=off in the environment to stop intercepting api.js.
 var turnstileSolver string
 
 func turnstileOn() bool {
@@ -1063,7 +1063,7 @@ func turnstilePage(b []byte, base *url.URL) []byte {
 }
 
 // env reads a variable with a fallback; loadDotEnv lets the plain binary pick up
-// .env too (docker-compose passes env_file).
+// .env too (docker-compose passes TURNSTILE_SOLVER as a container env var).
 func env(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 		return v
@@ -1095,10 +1095,10 @@ func loadDotEnv(path string) {
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	fwd := flag.String("forward", "", "optional CONNECT (forward proxy) listen address, e.g. :8081")
-	fwdHosts := flag.String("fwd-hosts", "bps.go.id", "comma-separated hosts tunnelled by /proxy.pac (suffix match, * = all)")
+	fwdHosts := flag.String("fwd-hosts", "google.com", "comma-separated hosts tunnelled by /proxy.pac (suffix match, * = all)")
 	flag.Parse()
 	loadDotEnv(".env")
-	turnstileSolver = env("TURNSTILE_SOLVER", "http://192.168.50.212:8191/solve")
+	turnstileSolver = env("TURNSTILE_SOLVER", "http://localhost:8191/solve")
 	if turnstileOn() {
 		log.Printf("turnstile solver: %s", turnstileSolver)
 	}
